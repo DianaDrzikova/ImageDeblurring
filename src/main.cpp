@@ -77,7 +77,8 @@ int main( int argc, char **argv ){
     srand((unsigned)time(NULL)); // seed random number generator
 
     // load input image and process
-    Mat input = load_grayscale( "dandelion.jpg" );
+    Mat input = imread("dandelion.jpg", IMREAD_COLOR);
+    input.convertTo(input, CV_64FC3, 1.0 / 255.0);
     Mat blurred = blur_image( input );
     Mat solution = blurred.clone();
 
@@ -155,17 +156,20 @@ Mat load_grayscale( const char *filename ){
 }
 
 // blurs the input image using the hardcoded PSF above
-Mat blur_image( const Mat &img ){
-    Mat blurred = Mat::zeros(img.size(), CV_64F);
+Mat blur_image(const Mat &img) {
+    Mat blurred = Mat::zeros(img.size(), CV_64FC3);  // Initialize the output image
 
-    for( int i=0; i<img.cols; i++ ){
-        for( int j=0; j<img.rows; j++ ){
-            double val = img.at<double>(j,i);
-            for( int k=0; k<psf_cnt; k++ ){
-                int tx=i+psf_x[k];
-                int ty=j+psf_y[k];
-                if( tx >= 0 && ty >= 0 && tx < img.cols && ty < img.rows ){
-                    blurred.at<double>(ty,tx) += psf_v[k]*val;
+    for (int i = 0; i < img.cols; i++) {
+        for (int j = 0; j < img.rows; j++) {
+            Vec3d val = img.at<Vec3d>(j, i);  // Get the RGB values at (j, i)
+            for (int k = 0; k < psf_cnt; k++) {
+                int tx = i + psf_x[k];
+                int ty = j + psf_y[k];
+                if (tx >= 0 && ty >= 0 && tx < img.cols && ty < img.rows) {
+                    Vec3d &b = blurred.at<Vec3d>(ty, tx);
+                    b[0] += psf_v[k] * val[0];  // Red channel
+                    b[1] += psf_v[k] * val[1];  // Green channel
+                    b[2] += psf_v[k] * val[2];  // Blue channel
                 }
             }
         }
@@ -174,13 +178,20 @@ Mat blur_image( const Mat &img ){
 }
 
 // takes a sample and splats its energy into the intrinsic and blurred images
-void splat( sd_data *data, sd_sample *x, double weight ){
-    data->intrinsic.at<double>(x->y,x->x) += weight*x->ed;
-    for( int i=0; i<psf_cnt; i++ ){
+void splat(sd_data *data, sd_sample *x, double weight) {
+    Vec3d &p = data->intrinsic.at<Vec3d>(x->y, x->x);
+    p[0] += weight * x->ed;  // Red channel
+    p[1] += weight * x->ed;  // Green channel
+    p[2] += weight * x->ed;  // Blue channel
+
+    for (int i = 0; i < psf_cnt; i++) {
         int tx = x->x + psf_x[i];
         int ty = x->y + psf_y[i];
-        if( tx >= 0 && ty >= 0 && tx < data->blurred.cols && ty < data->blurred.rows ){
-            data->blurred.at<double>(ty,tx) += weight*x->ed*psf_v[i];
+        if (tx >= 0 && ty >= 0 && tx < data->blurred.cols && ty < data->blurred.rows) {
+            Vec3d &b = data->blurred.at<Vec3d>(ty, tx);
+            b[0] += weight * x->ed * psf_v[i];  // Red channel
+            b[1] += weight * x->ed * psf_v[i];  // Green channel
+            b[2] += weight * x->ed * psf_v[i];  // Blue channel
         }
     }
 }
@@ -245,33 +256,35 @@ void mutate( sd_data *data, sd_sample *x, sd_sample *y ){
     }
 }
 
-double data_energy( sd_data *data, int x, int y ){
+double data_energy(sd_data *data, int x, int y) {
     double sum = 0.0;
-    for( int i=0; i<psf_cnt; i++ ){
+    for (int i = 0; i < psf_cnt; i++) {
         int tx = x + psf_x[i];
         int ty = y + psf_y[i];
-        if( inside_image(data,tx,ty) ){
-            double delta = data->blurred.at<double>(ty,tx) - data->input.at<double>(ty,tx);
-            sum += delta*delta;
+        if (inside_image(data, tx, ty)) {
+            Vec3d delta = data->blurred.at<Vec3d>(ty, tx) - data->input.at<Vec3d>(ty, tx);
+            sum += delta.dot(delta); // Sum squared difference over R, G, B
         }
     }
     return sum;
 }
 
-double regularizer_energy( sd_data *data, int x, int y ){
-    if( x < 0 || x >= data->intrinsic.cols || y < 0 || y >= data->intrinsic.rows )
-        return 0.0;
-    double dx=0.0, dy=0.0;
-    double val = data->intrinsic.at<double>(y,x);
-    if( x > 0 ){
-        double left = data->intrinsic.at<double>(y,x-1);
+double regularizer_energy(sd_data *data, int x, int y) {
+    if (!inside_image(data, x, y)) return 0.0;
+
+    Vec3d dx = Vec3d(0, 0, 0), dy = Vec3d(0, 0, 0);
+    Vec3d val = data->intrinsic.at<Vec3d>(y, x);
+
+    if (x > 0) {
+        Vec3d left = data->intrinsic.at<Vec3d>(y, x - 1);
         dx = val - left;
     }
-    if( y > 0 ){
-        double up = data->intrinsic.at<double>(y-1,x);
+    if (y > 0) {
+        Vec3d up = data->intrinsic.at<Vec3d>(y - 1, x);
         dy = val - up;
     }
-    return reg_weight*sqrt(dx*dx+dy*dy);
+
+    return reg_weight * sqrt(dx.dot(dx) + dy.dot(dy)); // Multi-channel gradient magnitude
 }
 
 void sample_normal( double &X, double &Y ){
