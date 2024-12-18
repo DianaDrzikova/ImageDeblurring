@@ -94,11 +94,24 @@ int main( int argc, char **argv ){
     copyMakeBorder(input, padded_input, pad, pad, pad, pad, BORDER_REFLECT, Scalar(0, 0, 0));
     Mat mask = Mat::zeros(padded_input.size(), CV_64F);
 
-    double saturation_threshold = 0.95;
+    double saturation_threshold = 0.99;
     for(int y = pad; y < padded_input.rows - pad; y++){
         for(int x = pad; x < padded_input.cols - pad; x++){
             Vec3d val = padded_input.at<Vec3d>(y,x);
-            if (val[0] < saturation_threshold && val[1] < saturation_threshold && val[2] < saturation_threshold)
+            double max_val = max(val[0], val[1]);
+            max_val = max(val[2], max_val);
+
+            double min_val = min(val[0], val[1]);
+            min_val = min(min_val, val[2]);
+
+            double difference_chroma = max_val - min_val;
+
+            double saturation = 0.0;
+            if (max_val > 0.0) { 
+                saturation = difference_chroma / max_val; 
+            }
+
+            if (saturation <= saturation_threshold)
                 mask.at<double>(y, x) = 1.0; // Mark as valid
             else 
                 mask.at<double>(y, x) = 0.0; // Mark as invalid
@@ -216,7 +229,9 @@ void splat(sd_data *data, sd_sample *x, double weight) {
     for (int i = 0; i < psf_cnt; i++) {
         int tx = x->x + psf_x[i];
         int ty = x->y + psf_y[i];
-        if (tx >= 0 && ty >= 0 && tx < data->blurred.cols && ty < data->blurred.rows && data->mask.at<double>(ty,tx) == 1.0) {
+
+        if (tx >= 0 && ty >= 0 && tx < data->blurred.cols && ty < data->blurred.rows && data->mask.at<double>(ty,tx) > 0.0) { // && data->mask.at<double>(ty,tx) == 1.0
+
             Vec3d &b = data->blurred.at<Vec3d>(ty, tx);
             b[0] += weight * x->ed * psf_v[i];  // Red channel
             b[1] += weight * x->ed * psf_v[i];  // Green channel
@@ -237,6 +252,7 @@ double evaluate( sd_data *data, sd_sample *x ){
     double de_plus, de_minus;
 
     // initial energy
+
     init = data_energy( data, x->x, x->y );
     for( int i=0; i<reg_cnt; i++ )
         init += regularizer_energy_TV( data, x->x+reg_x[i], x->y+reg_y[i] );
@@ -290,7 +306,7 @@ double data_energy(sd_data *data, int x, int y) {
     for (int i = 0; i < psf_cnt; i++) {
         int tx = x + psf_x[i];
         int ty = y + psf_y[i];
-        if (inside_image(data, tx, ty) && data->mask.at<double>(ty,tx) == 1.0) {
+        if (inside_image(data, tx, ty) && data->mask.at<double>(ty,tx) > 0.0) {
             Vec3d delta = data->blurred.at<Vec3d>(ty, tx) - data->input.at<Vec3d>(ty, tx);
             sum += delta.dot(delta); // Sum squared difference over R, G, B
         }
@@ -330,6 +346,10 @@ double regularizer_energy_sparse_1st2nd (sd_data *data, int x, int y) {
     for (int c = 0; c < 3; c++) {
         cost += frac_norm(dx[c]) + frac_norm(dy[c]);
         cost += frac_norm(dxx[c]) + frac_norm(dyy[c]);
+    }
+
+    return reg_weight * cost;
+}
 
 
 // 2) Data-Dependent Regularizer
@@ -486,3 +506,4 @@ double stochastic_deconvolution(sd_data *data, sd_callbacks *cb, double ed, int 
 
     return a_rate/double(n_mutations);
 }
+
