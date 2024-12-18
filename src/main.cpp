@@ -14,6 +14,7 @@ struct sd_data {
     Mat input;      // blurred input image q
     Mat intrinsic;  // intrinsic image p
     Mat blurred;    // A p
+    Mat mask;       // mask for valid pixels (1.0 = valid, 0.0 = invalid/padded/saturated)
 };
 
 struct sd_sample {
@@ -79,13 +80,31 @@ int main( int argc, char **argv ){
     // load input image and process
     Mat input = imread("dandelion.jpg", IMREAD_COLOR);
     input.convertTo(input, CV_64FC3, 1.0 / 255.0);
-    Mat blurred = blur_image( input );
+
+    int pad = 4;
+    Mat padded_input;
+    copyMakeBorder(input, padded_input, pad, pad, pad, pad, BORDER_REFLECT, Scalar(0, 0, 0));
+    Mat mask = Mat::zeros(padded_input.size(), CV_64F);
+
+    double saturation_threshold = 0.95;
+    for(int y = pad; y < padded_input.rows - pad; y++){
+        for(int x = pad; x < padded_input.cols - pad; x++){
+            Vec3d val = padded_input.at<Vec3d>(y,x);
+            if (val[0] < saturation_threshold && val[1] < saturation_threshold && val[2] < saturation_threshold)
+                mask.at<double>(y, x) = 1.0; // Mark as valid
+            else 
+                mask.at<double>(y, x) = 0.0; // Mark as invalid
+        }
+    }
+
+    Mat blurred = blur_image( padded_input );
     Mat solution = blurred.clone();
 
     sd_data data;
     data.input = blurred;   // q
     data.intrinsic = solution; // p
     data.blurred = blur_image( solution ); // A p
+    data.mask = mask;
 
     sd_callbacks cb;
     cb.copy = copy_sample;
@@ -95,16 +114,18 @@ int main( int argc, char **argv ){
 
     double accept_rate = 0.0;
     for( int k=0; k<num_iterations; k++ ){
-        accept_rate = stochastic_deconvolution( &data, &cb, ed, input.cols*input.rows );
+        accept_rate = stochastic_deconvolution( &data, &cb, ed, data.input.cols*data.input.rows );
         std::cout << "iteration " << k+1 << " of " << num_iterations << ", acceptance rate: " << accept_rate << ", ed: " << ed << std::endl;
         if( accept_rate < 0.4 )
             ed *= 0.5f;
     }
-
+    // resize back to the original image size
+    Mat final_intrinsic = data.intrinsic(Rect(pad, pad, input.cols, input.rows)).clone();
+    Mat final_input = padded_input(Rect(pad, pad, input.cols, input.rows)).clone();
     // Write out images
     // ground_truth.png
     {
-        Mat out = input.clone();
+        Mat out = final_input.clone();
         cv::threshold(out, out, 0.0, 0.0, THRESH_TOZERO);
         out = out * 255.0;
         Mat out8u; out.convertTo(out8u, CV_8U);
@@ -113,7 +134,7 @@ int main( int argc, char **argv ){
 
     // blurred.png
     {
-        Mat out = data.input.clone();
+        Mat out = blurred(Rect(pad, pad, input.cols, input.rows)).clone();
         cv::threshold(out, out, 0.0, 0.0, THRESH_TOZERO);
         out = out * 255.0;
         Mat out8u; out.convertTo(out8u, CV_8U);
@@ -122,7 +143,7 @@ int main( int argc, char **argv ){
 
     // intrinsic.png
     {
-        Mat out = data.intrinsic.clone();
+        Mat out = final_intrinsic.clone();
         // clamp to >=0.0
         cv::threshold(out, out, 0.0, 0.0, THRESH_TOZERO);
         // clamp to <=1.0
@@ -131,7 +152,7 @@ int main( int argc, char **argv ){
         Mat out8u; out.convertTo(out8u, CV_8U);
         imwrite("intrinsic.png", out8u);
     }
-
+    std::cout << "Done!" << std::endl;
     return 0;
 }
 
@@ -187,7 +208,7 @@ void splat(sd_data *data, sd_sample *x, double weight) {
     for (int i = 0; i < psf_cnt; i++) {
         int tx = x->x + psf_x[i];
         int ty = x->y + psf_y[i];
-        if (tx >= 0 && ty >= 0 && tx < data->blurred.cols && ty < data->blurred.rows) {
+        if (tx >= 0 && ty >= 0 && tx < data->blurred.cols && ty < data->blurred.rows && data->mask.at<double>(ty,tx) == 1.0) {
             Vec3d &b = data->blurred.at<Vec3d>(ty, tx);
             b[0] += weight * x->ed * psf_v[i];  // Red channel
             b[1] += weight * x->ed * psf_v[i];  // Green channel
@@ -261,7 +282,7 @@ double data_energy(sd_data *data, int x, int y) {
     for (int i = 0; i < psf_cnt; i++) {
         int tx = x + psf_x[i];
         int ty = y + psf_y[i];
-        if (inside_image(data, tx, ty)) {
+        if (inside_image(data, tx, ty) && data->mask.at<double>(ty,tx) == 1.0) {
             Vec3d delta = data->blurred.at<Vec3d>(ty, tx) - data->input.at<Vec3d>(ty, tx);
             sum += delta.dot(delta); // Sum squared difference over R, G, B
         }
