@@ -70,7 +70,6 @@ double evaluate( sd_data *data, sd_sample *x );
 void mutate( sd_data *data, sd_sample *x, sd_sample *y );
 double stochastic_deconvolution(sd_data *data, sd_callbacks *cb, double ed, int n_mutations);
 
-Mat load_grayscale( const char *filename );
 Mat blur_image( const Mat &img );
 void sample_normal( double &X, double &Y );
 bool inside_image( sd_data *data, int x, int y );
@@ -177,25 +176,6 @@ int main( int argc, char **argv ){
     return 0;
 }
 
-// loads an image and converts it to grayscale by averaging and normalizing to [0,1]
-Mat load_grayscale( const char *filename ){
-    Mat input = imread(filename, IMREAD_COLOR);
-    if( input.empty() ) {
-        std::cerr << "Could not load image: " << filename << std::endl;
-        exit(1);
-    }
-    input.convertTo(input, CV_64F, 1.0/255.0);
-
-    vector<Mat> ch;
-    split(input, ch);
-    Mat gray = (ch[0] + ch[1] + ch[2]) / 3.0;
-
-    double minVal, maxVal;
-    minMaxLoc(gray, &minVal, &maxVal);
-    gray = (gray - minVal) / (maxVal - minVal);
-
-    return gray;
-}
 
 // blurs the input image using the hardcoded PSF above
 Mat blur_image(const Mat &img) {
