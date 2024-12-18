@@ -118,15 +118,6 @@ int main( int argc, char **argv ){
         }
     }
 
-    {
-        Mat out = mask.clone();
-        cv::threshold(out, out, 0.0, 0.0, THRESH_TOZERO);
-        out = out * 255.0;
-        Mat out8u; out.convertTo(out8u, CV_8U);
-        imwrite("mask.png", out8u);
-    }
-
-
     Mat blurred = blur_image( padded_input );
     Mat solution = blurred.clone();
 
@@ -240,6 +231,7 @@ void splat(sd_data *data, sd_sample *x, double weight) {
         int ty = x->y + psf_y[i];
 
         if (tx >= 0 && ty >= 0 && tx < data->blurred.cols && ty < data->blurred.rows && data->mask.at<double>(ty,tx) > 0.0) { // && data->mask.at<double>(ty,tx) == 1.0
+
             Vec3d &b = data->blurred.at<Vec3d>(ty, tx);
             b[0] += weight * x->ed * psf_v[i];  // Red channel
             b[1] += weight * x->ed * psf_v[i];  // Green channel
@@ -313,7 +305,7 @@ double data_energy(sd_data *data, int x, int y) {
     double sum = 0.0;
     for (int i = 0; i < psf_cnt; i++) {
         int tx = x + psf_x[i];
-        int ty = y + psf_y[i]; // && data->mask.at<double>(ty,tx) > 0.0
+        int ty = y + psf_y[i];
         if (inside_image(data, tx, ty) && data->mask.at<double>(ty,tx) > 0.0) {
             Vec3d delta = data->blurred.at<Vec3d>(ty, tx) - data->input.at<Vec3d>(ty, tx);
             sum += delta.dot(delta); // Sum squared difference over R, G, B
@@ -358,6 +350,7 @@ double regularizer_energy_sparse_1st2nd (sd_data *data, int x, int y) {
 
     return reg_weight * cost;
 }
+
 
 // 2) Data-Dependent Regularizer
 // Uses the gradient of the input image q to modulate the smoothing
@@ -422,9 +415,6 @@ double regularizer_energy_discontinuous(sd_data *data, int x, int y) {
 
 double regularizer_energy_TV(sd_data *data, int x, int y) {
     if (!inside_image(data, x, y)) return 0.0;
-
-     //   if (data->mask.at<double>(x->y, x->x) == 0.0) return 0.0;
-
 
     Vec3d dx = Vec3d(0, 0, 0), dy = Vec3d(0, 0, 0);
     Vec3d val = data->intrinsic.at<Vec3d>(y, x);
