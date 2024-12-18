@@ -49,6 +49,9 @@ const int    reg_cnt = 3;
 const int    reg_x[] = {  0,  1,  0 };
 const int    reg_y[] = {  0,  0,  1 };
 
+const double gamma_value = 2.0; // gamma value according to paper
+const double blend_factor = 0.5; // blend factor to combine gamma and linear reg.
+
 ///////////////////////////////////////////////////////////////////////////////
 // Forward declarations of callbacks and auxiliary functions //////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -259,6 +262,32 @@ double data_energy( sd_data *data, int x, int y ){
 }
 
 double regularizer_energy( sd_data *data, int x, int y ){
+
+    if( x < 1 || x >= data->intrinsic.cols-1 || y < 1 || y >= data->intrinsic.rows-1 )
+        return 0.0;
+
+    double center_val = data->intrinsic.at<double>(y, x);
+    double center_gamma = pow(center_val, 1.0/gamma_value);
+
+    double sum_abs_diff = 0.0;
+    for(int dy = -1; dy <= 1; dy++){
+        for(int dx = -1; dx <= 1; dx++){
+            if(dx == 0 && dy == 0) continue;
+            int nx = x + dx;
+            int ny = y + dy;
+            if( inside_image(data, nx, ny) ) {
+                double neighbor_val = data->intrinsic.at<double>(ny, nx);
+                double neighbor_gamma = pow(neighbor_val, 1.0/gamma_value);
+                double diff = fabs(neighbor_gamma - center_gamma);
+                sum_abs_diff += diff;
+            }
+        }
+    }
+
+    return reg_weight * sum_abs_diff;
+}
+
+double regularizer_energy_linear( sd_data *data, int x, int y ){
     if( x < 0 || x >= data->intrinsic.cols || y < 0 || y >= data->intrinsic.rows )
         return 0.0;
     double dx=0.0, dy=0.0;
@@ -273,6 +302,13 @@ double regularizer_energy( sd_data *data, int x, int y ){
     }
     return reg_weight*sqrt(dx*dx+dy*dy);
 }
+
+double regularizer_energy_combinaton(sd_data *data, int x, int y) {
+    double lin = regularizer_energy_linear(data, x, y);
+    double gamma_sad = regularizer_energy(data, x, y);
+    return blend_factor * lin + (1.0 - blend_factor) * gamma_sad;
+}
+
 
 void sample_normal( double &X, double &Y ){
     double u=drand48(), v=drand48();
