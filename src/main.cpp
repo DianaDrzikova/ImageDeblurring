@@ -14,6 +14,7 @@ struct sd_data {
     Mat input;      // blurred input image q
     Mat intrinsic;  // intrinsic image p
     Mat blurred;    // A p
+    Mat mask;       // mask for valid pixels (1.0 = valid, 0.0 = invalid/padded/saturated)
 };
 
 struct sd_sample {
@@ -49,6 +50,9 @@ const int    reg_cnt = 3;
 const int    reg_x[] = {  0,  1,  0 };
 const int    reg_y[] = {  0,  0,  1 };
 
+const double gamma_value = 2.0; // gamma value according to paper
+const double blend_factor = 0.5; // blend factor to combine gamma and linear reg.
+
 ///////////////////////////////////////////////////////////////////////////////
 // Forward declarations of callbacks and auxiliary functions //////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -68,7 +72,9 @@ Mat blur_image( const Mat &img );
 void sample_normal( double &X, double &Y );
 bool inside_image( sd_data *data, int x, int y );
 double data_energy( sd_data *data, int x, int y );
-double regularizer_energy( sd_data *data, int x, int y );
+double regularizer_energy_TV( sd_data *data, int x, int y );
+double regularizer_energy_gamma(sd_data *data, int x, int y);
+double regularizer_energy_combinaton(sd_data *data, int x, int y);
 
 ///////////////////////////////////////////////////////////////////////////////
 // Entry point ////////////////////////////////////////////////////////////////
@@ -77,14 +83,33 @@ int main( int argc, char **argv ){
     srand((unsigned)time(NULL)); // seed random number generator
 
     // load input image and process
-    Mat input = load_grayscale( "dandelion.jpg" );
-    Mat blurred = blur_image( input );
+    Mat input = imread("dandelion.jpg", IMREAD_COLOR);
+    input.convertTo(input, CV_64FC3, 1.0 / 255.0);
+
+    int pad = 4;
+    Mat padded_input;
+    copyMakeBorder(input, padded_input, pad, pad, pad, pad, BORDER_REFLECT, Scalar(0, 0, 0));
+    Mat mask = Mat::zeros(padded_input.size(), CV_64F);
+
+    double saturation_threshold = 0.95;
+    for(int y = pad; y < padded_input.rows - pad; y++){
+        for(int x = pad; x < padded_input.cols - pad; x++){
+            Vec3d val = padded_input.at<Vec3d>(y,x);
+            if (val[0] < saturation_threshold && val[1] < saturation_threshold && val[2] < saturation_threshold)
+                mask.at<double>(y, x) = 1.0; // Mark as valid
+            else 
+                mask.at<double>(y, x) = 0.0; // Mark as invalid
+        }
+    }
+
+    Mat blurred = blur_image( padded_input );
     Mat solution = blurred.clone();
 
     sd_data data;
     data.input = blurred;   // q
     data.intrinsic = solution; // p
     data.blurred = blur_image( solution ); // A p
+    data.mask = mask;
 
     sd_callbacks cb;
     cb.copy = copy_sample;
@@ -94,16 +119,18 @@ int main( int argc, char **argv ){
 
     double accept_rate = 0.0;
     for( int k=0; k<num_iterations; k++ ){
-        accept_rate = stochastic_deconvolution( &data, &cb, ed, input.cols*input.rows );
+        accept_rate = stochastic_deconvolution( &data, &cb, ed, data.input.cols*data.input.rows );
         std::cout << "iteration " << k+1 << " of " << num_iterations << ", acceptance rate: " << accept_rate << ", ed: " << ed << std::endl;
         if( accept_rate < 0.4 )
             ed *= 0.5f;
     }
-
+    // resize back to the original image size
+    Mat final_intrinsic = data.intrinsic(Rect(pad, pad, input.cols, input.rows)).clone();
+    Mat final_input = padded_input(Rect(pad, pad, input.cols, input.rows)).clone();
     // Write out images
     // ground_truth.png
     {
-        Mat out = input.clone();
+        Mat out = final_input.clone();
         cv::threshold(out, out, 0.0, 0.0, THRESH_TOZERO);
         out = out * 255.0;
         Mat out8u; out.convertTo(out8u, CV_8U);
@@ -112,7 +139,7 @@ int main( int argc, char **argv ){
 
     // blurred.png
     {
-        Mat out = data.input.clone();
+        Mat out = blurred(Rect(pad, pad, input.cols, input.rows)).clone();
         cv::threshold(out, out, 0.0, 0.0, THRESH_TOZERO);
         out = out * 255.0;
         Mat out8u; out.convertTo(out8u, CV_8U);
@@ -121,7 +148,7 @@ int main( int argc, char **argv ){
 
     // intrinsic.png
     {
-        Mat out = data.intrinsic.clone();
+        Mat out = final_intrinsic.clone();
         // clamp to >=0.0
         cv::threshold(out, out, 0.0, 0.0, THRESH_TOZERO);
         // clamp to <=1.0
@@ -130,7 +157,7 @@ int main( int argc, char **argv ){
         Mat out8u; out.convertTo(out8u, CV_8U);
         imwrite("intrinsic.png", out8u);
     }
-
+    std::cout << "Done!" << std::endl;
     return 0;
 }
 
@@ -155,17 +182,20 @@ Mat load_grayscale( const char *filename ){
 }
 
 // blurs the input image using the hardcoded PSF above
-Mat blur_image( const Mat &img ){
-    Mat blurred = Mat::zeros(img.size(), CV_64F);
+Mat blur_image(const Mat &img) {
+    Mat blurred = Mat::zeros(img.size(), CV_64FC3);  // Initialize the output image
 
-    for( int i=0; i<img.cols; i++ ){
-        for( int j=0; j<img.rows; j++ ){
-            double val = img.at<double>(j,i);
-            for( int k=0; k<psf_cnt; k++ ){
-                int tx=i+psf_x[k];
-                int ty=j+psf_y[k];
-                if( tx >= 0 && ty >= 0 && tx < img.cols && ty < img.rows ){
-                    blurred.at<double>(ty,tx) += psf_v[k]*val;
+    for (int i = 0; i < img.cols; i++) {
+        for (int j = 0; j < img.rows; j++) {
+            Vec3d val = img.at<Vec3d>(j, i);  // Get the RGB values at (j, i)
+            for (int k = 0; k < psf_cnt; k++) {
+                int tx = i + psf_x[k];
+                int ty = j + psf_y[k];
+                if (tx >= 0 && ty >= 0 && tx < img.cols && ty < img.rows) {
+                    Vec3d &b = blurred.at<Vec3d>(ty, tx);
+                    b[0] += psf_v[k] * val[0];  // Red channel
+                    b[1] += psf_v[k] * val[1];  // Green channel
+                    b[2] += psf_v[k] * val[2];  // Blue channel
                 }
             }
         }
@@ -174,13 +204,20 @@ Mat blur_image( const Mat &img ){
 }
 
 // takes a sample and splats its energy into the intrinsic and blurred images
-void splat( sd_data *data, sd_sample *x, double weight ){
-    data->intrinsic.at<double>(x->y,x->x) += weight*x->ed;
-    for( int i=0; i<psf_cnt; i++ ){
+void splat(sd_data *data, sd_sample *x, double weight) {
+    Vec3d &p = data->intrinsic.at<Vec3d>(x->y, x->x);
+    p[0] += weight * x->ed;  // Red channel
+    p[1] += weight * x->ed;  // Green channel
+    p[2] += weight * x->ed;  // Blue channel
+
+    for (int i = 0; i < psf_cnt; i++) {
         int tx = x->x + psf_x[i];
         int ty = x->y + psf_y[i];
-        if( tx >= 0 && ty >= 0 && tx < data->blurred.cols && ty < data->blurred.rows ){
-            data->blurred.at<double>(ty,tx) += weight*x->ed*psf_v[i];
+        if (tx >= 0 && ty >= 0 && tx < data->blurred.cols && ty < data->blurred.rows && data->mask.at<double>(ty,tx) == 1.0) {
+            Vec3d &b = data->blurred.at<Vec3d>(ty, tx);
+            b[0] += weight * x->ed * psf_v[i];  // Red channel
+            b[1] += weight * x->ed * psf_v[i];  // Green channel
+            b[2] += weight * x->ed * psf_v[i];  // Blue channel
         }
     }
 }
@@ -199,19 +236,19 @@ double evaluate( sd_data *data, sd_sample *x ){
     // initial energy
     init = data_energy( data, x->x, x->y );
     for( int i=0; i<reg_cnt; i++ )
-        init += regularizer_energy( data, x->x+reg_x[i], x->y+reg_y[i] );
+        init += regularizer_energy_TV( data, x->x+reg_x[i], x->y+reg_y[i] );
 
     // splat positive
     splat( data, x, 1.0 );
     plus_val = data_energy( data, x->x, x->y );
     for( int i=0; i<reg_cnt; i++ )
-        plus_val += regularizer_energy( data, x->x+reg_x[i], x->y+reg_y[i] );
+        plus_val += regularizer_energy_TV( data, x->x+reg_x[i], x->y+reg_y[i] );
 
     // now negative (remove twice to get negative effect)
     splat( data, x, -2.0 );
     minus_val = data_energy( data, x->x, x->y );
     for( int i=0; i<reg_cnt; i++ )
-        minus_val += regularizer_energy( data, x->x+reg_x[i], x->y+reg_y[i] );
+        minus_val += regularizer_energy_TV( data, x->x+reg_x[i], x->y+reg_y[i] );
 
     // restore original
     splat( data, x, 1.0 );
@@ -245,33 +282,70 @@ void mutate( sd_data *data, sd_sample *x, sd_sample *y ){
     }
 }
 
-double data_energy( sd_data *data, int x, int y ){
+double data_energy(sd_data *data, int x, int y) {
     double sum = 0.0;
-    for( int i=0; i<psf_cnt; i++ ){
+    for (int i = 0; i < psf_cnt; i++) {
         int tx = x + psf_x[i];
         int ty = y + psf_y[i];
-        if( inside_image(data,tx,ty) ){
-            double delta = data->blurred.at<double>(ty,tx) - data->input.at<double>(ty,tx);
-            sum += delta*delta;
+        if (inside_image(data, tx, ty) && data->mask.at<double>(ty,tx) == 1.0) {
+            Vec3d delta = data->blurred.at<Vec3d>(ty, tx) - data->input.at<Vec3d>(ty, tx);
+            sum += delta.dot(delta); // Sum squared difference over R, G, B
         }
     }
     return sum;
 }
 
-double regularizer_energy( sd_data *data, int x, int y ){
-    if( x < 0 || x >= data->intrinsic.cols || y < 0 || y >= data->intrinsic.rows )
-        return 0.0;
-    double dx=0.0, dy=0.0;
-    double val = data->intrinsic.at<double>(y,x);
-    if( x > 0 ){
-        double left = data->intrinsic.at<double>(y,x-1);
+double regularizer_energy_TV(sd_data *data, int x, int y) {
+    if (!inside_image(data, x, y)) return 0.0;
+
+    Vec3d dx = Vec3d(0, 0, 0), dy = Vec3d(0, 0, 0);
+    Vec3d val = data->intrinsic.at<Vec3d>(y, x);
+
+    if (x > 0) {
+        Vec3d left = data->intrinsic.at<Vec3d>(y, x - 1);
         dx = val - left;
     }
-    if( y > 0 ){
-        double up = data->intrinsic.at<double>(y-1,x);
+    if (y > 0) {
+        Vec3d up = data->intrinsic.at<Vec3d>(y - 1, x);
         dy = val - up;
     }
-    return reg_weight*sqrt(dx*dx+dy*dy);
+
+    return reg_weight * sqrt(dx.dot(dx) + dy.dot(dy)); // Multi-channel gradient magnitude
+}
+double regularizer_energy_gamma(sd_data *data, int x, int y) {
+    if (x < 1 || x >= data->intrinsic.cols - 1 || y < 1 || y >= data->intrinsic.rows - 1)
+        return 0.0;
+
+    Vec3d center_val = data->intrinsic.at<Vec3d>(y, x);
+    Vec3d center_gamma;
+    for (int c = 0; c < 3; c++) {
+        center_gamma[c] = pow(center_val[c], 1.0 / gamma_value);
+    }
+
+    double sum_abs_diff = 0.0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = x + dx;
+            int ny = y + dy;
+            if (inside_image(data, nx, ny)) {
+                Vec3d neighbor_val = data->intrinsic.at<Vec3d>(ny, nx);
+                Vec3d neighbor_gamma;
+                for (int c = 0; c < 3; c++) {
+                    neighbor_gamma[c] = pow(neighbor_val[c], 1.0 / gamma_value);
+                    double diff = fabs(neighbor_gamma[c] - center_gamma[c]);
+                    sum_abs_diff += diff;
+                }
+            }
+        }
+    }
+
+    return reg_weight * sum_abs_diff;
+}
+double regularizer_energy_combinaton(sd_data *data, int x, int y) {
+    double lin = regularizer_energy_TV(data, x, y);
+    double gamma_sad = regularizer_energy_gamma(data, x, y);
+    return blend_factor * lin + (1.0 - blend_factor) * gamma_sad;
 }
 
 void sample_normal( double &X, double &Y ){
