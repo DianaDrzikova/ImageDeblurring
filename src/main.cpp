@@ -53,6 +53,9 @@ const int    reg_y[] = {  0,  0,  1 };
 const double gamma_value = 2.0; // gamma value according to paper
 const double blend_factor = 0.5; // blend factor to combine gamma and linear reg.
 
+const double gamma_value = 2.0; // gamma value according to paper
+const double blend_factor = 0.5; // blend factor to combine gamma and linear reg.
+
 ///////////////////////////////////////////////////////////////////////////////
 // Forward declarations of callbacks and auxiliary functions //////////////////
 ///////////////////////////////////////////////////////////////////////////////
