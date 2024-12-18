@@ -50,6 +50,9 @@ const int    reg_cnt = 3;
 const int    reg_x[] = {  0,  1,  0 };
 const int    reg_y[] = {  0,  0,  1 };
 
+const double gamma_value = 2.0; // gamma value according to paper
+const double blend_factor = 0.5; // blend factor to combine gamma and linear reg.
+
 ///////////////////////////////////////////////////////////////////////////////
 // Forward declarations of callbacks and auxiliary functions //////////////////
 ///////////////////////////////////////////////////////////////////////////////
@@ -69,7 +72,9 @@ Mat blur_image( const Mat &img );
 void sample_normal( double &X, double &Y );
 bool inside_image( sd_data *data, int x, int y );
 double data_energy( sd_data *data, int x, int y );
-double regularizer_energy( sd_data *data, int x, int y );
+double regularizer_energy_TV( sd_data *data, int x, int y );
+double regularizer_energy_gamma(sd_data *data, int x, int y);
+double regularizer_energy_combinaton(sd_data *data, int x, int y);
 
 ///////////////////////////////////////////////////////////////////////////////
 // Entry point ////////////////////////////////////////////////////////////////
@@ -231,19 +236,19 @@ double evaluate( sd_data *data, sd_sample *x ){
     // initial energy
     init = data_energy( data, x->x, x->y );
     for( int i=0; i<reg_cnt; i++ )
-        init += regularizer_energy( data, x->x+reg_x[i], x->y+reg_y[i] );
+        init += regularizer_energy_TV( data, x->x+reg_x[i], x->y+reg_y[i] );
 
     // splat positive
     splat( data, x, 1.0 );
     plus_val = data_energy( data, x->x, x->y );
     for( int i=0; i<reg_cnt; i++ )
-        plus_val += regularizer_energy( data, x->x+reg_x[i], x->y+reg_y[i] );
+        plus_val += regularizer_energy_TV( data, x->x+reg_x[i], x->y+reg_y[i] );
 
     // now negative (remove twice to get negative effect)
     splat( data, x, -2.0 );
     minus_val = data_energy( data, x->x, x->y );
     for( int i=0; i<reg_cnt; i++ )
-        minus_val += regularizer_energy( data, x->x+reg_x[i], x->y+reg_y[i] );
+        minus_val += regularizer_energy_TV( data, x->x+reg_x[i], x->y+reg_y[i] );
 
     // restore original
     splat( data, x, 1.0 );
@@ -290,7 +295,7 @@ double data_energy(sd_data *data, int x, int y) {
     return sum;
 }
 
-double regularizer_energy(sd_data *data, int x, int y) {
+double regularizer_energy_TV(sd_data *data, int x, int y) {
     if (!inside_image(data, x, y)) return 0.0;
 
     Vec3d dx = Vec3d(0, 0, 0), dy = Vec3d(0, 0, 0);
@@ -306,6 +311,41 @@ double regularizer_energy(sd_data *data, int x, int y) {
     }
 
     return reg_weight * sqrt(dx.dot(dx) + dy.dot(dy)); // Multi-channel gradient magnitude
+}
+double regularizer_energy_gamma(sd_data *data, int x, int y) {
+    if (x < 1 || x >= data->intrinsic.cols - 1 || y < 1 || y >= data->intrinsic.rows - 1)
+        return 0.0;
+
+    Vec3d center_val = data->intrinsic.at<Vec3d>(y, x);
+    Vec3d center_gamma;
+    for (int c = 0; c < 3; c++) {
+        center_gamma[c] = pow(center_val[c], 1.0 / gamma_value);
+    }
+
+    double sum_abs_diff = 0.0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = x + dx;
+            int ny = y + dy;
+            if (inside_image(data, nx, ny)) {
+                Vec3d neighbor_val = data->intrinsic.at<Vec3d>(ny, nx);
+                Vec3d neighbor_gamma;
+                for (int c = 0; c < 3; c++) {
+                    neighbor_gamma[c] = pow(neighbor_val[c], 1.0 / gamma_value);
+                    double diff = fabs(neighbor_gamma[c] - center_gamma[c]);
+                    sum_abs_diff += diff;
+                }
+            }
+        }
+    }
+
+    return reg_weight * sum_abs_diff;
+}
+double regularizer_energy_combinaton(sd_data *data, int x, int y) {
+    double lin = regularizer_energy_TV(data, x, y);
+    double gamma_sad = regularizer_energy_gamma(data, x, y);
+    return blend_factor * lin + (1.0 - blend_factor) * gamma_sad;
 }
 
 void sample_normal( double &X, double &Y ){
