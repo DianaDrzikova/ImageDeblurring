@@ -290,13 +290,14 @@ double data_energy(sd_data *data, int x, int y) {
     for (int i = 0; i < psf_cnt; i++) {
         int tx = x + psf_x[i];
         int ty = y + psf_y[i];
-        if (inside_image(data, tx, ty && data->mask.at<double>(ty,tx) == 1.0)) {
+        if (inside_image(data, tx, ty) && data->mask.at<double>(ty,tx) == 1.0) {
             Vec3d delta = data->blurred.at<Vec3d>(ty, tx) - data->input.at<Vec3d>(ty, tx);
             sum += delta.dot(delta); // Sum squared difference over R, G, B
         }
     }
     return sum;
 }
+
 
 static inline Vec3d get_pixel_safe(const Mat &img, int x, int y) {
     if(x < 0 || x >= img.cols || y < 0 || y >= img.rows) {
@@ -329,10 +330,7 @@ double regularizer_energy_sparse_1st2nd (sd_data *data, int x, int y) {
     for (int c = 0; c < 3; c++) {
         cost += frac_norm(dx[c]) + frac_norm(dy[c]);
         cost += frac_norm(dxx[c]) + frac_norm(dyy[c]);
-    }
 
-    return reg_weight * cost;
-}
 
 // 2) Data-Dependent Regularizer
 // Uses the gradient of the input image q to modulate the smoothing
@@ -442,6 +440,7 @@ double regularizer_energy_gamma(sd_data *data, int x, int y) {
 
     return reg_weight * sum_abs_diff;
 }
+
 double regularizer_energy_combinaton(sd_data *data, int x, int y) {
     double lin = regularizer_energy_TV(data, x, y);
     double gamma_sad = regularizer_energy_gamma(data, x, y);
