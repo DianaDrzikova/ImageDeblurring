@@ -53,8 +53,8 @@ const int    reg_y[] = {  0,  0,  1 };
 const double gamma_value = 2.0; // gamma value according to paper
 const double blend_factor = 0.5; // blend factor to combine gamma and linear reg.
 
-const double gamma_value = 2.0; // gamma value according to paper
-const double blend_factor = 0.5; // blend factor to combine gamma and linear reg.
+static const double frac_exp = 0.8; // value from Levin paper
+static const double epsilon = 1e-3; // robust penalty
 
 ///////////////////////////////////////////////////////////////////////////////
 // Forward declarations of callbacks and auxiliary functions //////////////////
@@ -298,6 +298,101 @@ double data_energy(sd_data *data, int x, int y) {
     return sum;
 }
 
+
+static inline Vec3d get_pixel_safe(const Mat &img, int x, int y) {
+    if(x < 0 || x >= img.cols || y < 0 || y >= img.rows) {
+        return Vec3d(0,0,0);
+    }
+    return img.at<Vec3d>(y,x);
+}
+
+// 1) Sparse 1st and 2nd Order Derivatives Regularizer
+double regularizer_energy_sparse_1st2nd (sd_data *data, int x, int y) {
+    if(!inside_image(data, x, y)) return 0.0;
+
+    Vec3d p = get_pixel_safe(data->intrinsic, x, y);
+    Vec3d pxm = get_pixel_safe(data->intrinsic, x-1, y);
+    Vec3d pym = get_pixel_safe(data->intrinsic, x, y-1);
+    Vec3d pxp = get_pixel_safe(data->intrinsic, x+1, y);
+    Vec3d pyp = get_pixel_safe(data->intrinsic, x, y+1);
+
+    // first order differences
+    Vec3d dx = p - pxm;    
+    Vec3d dy = p - pym;  
+
+    // second order differences (Laplacian components)
+    Vec3d dxx = pxp + pxm - 2.0*p;
+    Vec3d dyy = pyp + pym - 2.0*p;
+
+    auto frac_norm = [&](double v) { return pow(fabs(v), frac_exp); };
+
+    double cost = 0.0;
+    for (int c = 0; c < 3; c++) {
+        cost += frac_norm(dx[c]) + frac_norm(dy[c]);
+        cost += frac_norm(dxx[c]) + frac_norm(dyy[c]);
+
+
+// 2) Data-Dependent Regularizer
+// Uses the gradient of the input image q to modulate the smoothing
+double regularizer_energy_data_dependent (sd_data *data, int x, int y) {
+    if(!inside_image(data, x, y)) return 0.0;
+
+    Vec3d q = get_pixel_safe(data->input, x, y);
+    Vec3d qxm = get_pixel_safe(data->input, x-1, y);
+    Vec3d qym = get_pixel_safe(data->input, x, y-1);
+
+    Vec3d dqx = q - qxm;
+    Vec3d dqy = q - qym;
+
+    double grad_mag_input = sqrt(dqx.dot(dqx) + dqy.dot(dqy));
+
+    double beta = 10.0;
+    double w = exp(-beta * grad_mag_input);
+
+    // Compute first order differences of p
+    Vec3d p = get_pixel_safe(data->intrinsic, x, y);
+    Vec3d pxm = get_pixel_safe(data->intrinsic, x-1, y);
+    Vec3d pym = get_pixel_safe(data->intrinsic, x, y-1);
+
+    Vec3d dx = p - pxm;
+    Vec3d dy = p - pym;
+
+    // Weighted L1 norm
+    double cost = 0.0;
+    for(int c=0; c<3; c++){
+        cost += w * fabs(dx[c]) + w * fabs(dy[c]);
+    }
+
+    return reg_weight * cost;
+}
+
+// 3) Discontinuous (Robust) Regularizer with Heavy-tailed distribution
+// Using a Charbonnier-like penalty with fractional exponent:
+double regularizer_energy_discontinuous(sd_data *data, int x, int y) {
+    if(!inside_image(data, x, y)) return 0.0;
+
+    Vec3d p = get_pixel_safe(data->intrinsic, x, y);
+    Vec3d pxm = get_pixel_safe(data->intrinsic, x-1, y);
+    Vec3d pym = get_pixel_safe(data->intrinsic, x, y-1);
+
+    Vec3d dx = p - pxm;
+    Vec3d dy = p - pym;
+
+    // Charbonnier-like penalty: (d^2 + epsilon^2)^(alpha)
+    double alpha = 0.4;
+
+    auto robust_penalty = [&](double d) {
+        return pow(d*d + epsilon*epsilon, alpha);
+    };
+
+    double cost = 0.0;
+    for (int c = 0; c < 3; c++) {
+        cost += robust_penalty(dx[c]) + robust_penalty(dy[c]);
+    }
+
+    return reg_weight * cost;
+}
+
 double regularizer_energy_TV(sd_data *data, int x, int y) {
     if (!inside_image(data, x, y)) return 0.0;
 
@@ -345,6 +440,7 @@ double regularizer_energy_gamma(sd_data *data, int x, int y) {
 
     return reg_weight * sum_abs_diff;
 }
+
 double regularizer_energy_combinaton(sd_data *data, int x, int y) {
     double lin = regularizer_energy_TV(data, x, y);
     double gamma_sad = regularizer_energy_gamma(data, x, y);
