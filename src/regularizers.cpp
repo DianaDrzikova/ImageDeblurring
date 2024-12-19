@@ -4,8 +4,6 @@
 #include <iostream>
 #include <algorithm>
 
-using namespace std;
-using namespace cv;
 
 const double reg_weight     = 0.0005;   // regularizer weight
 const double gamma_value = 2.0; // gamma value according to paper
@@ -13,6 +11,25 @@ const double blend_factor = 0.5; // blend factor to combine gamma and linear reg
 
 static const double frac_exp = 0.8; // value from Levin paper
 static const double epsilon = 1e-3; // robust penalty
+
+double apply_regularizer(sd_data *data, int x, int y){
+    if (data->selected_regularizer == "tv") {
+        return regularizer_energy_TV(data, x, y);
+    } else if (data->selected_regularizer == "gamma") {
+        return regularizer_energy_gamma(data, x, y);
+    } else if (data->selected_regularizer == "combination") {
+        return regularizer_energy_combination(data, x, y);
+    } else if (data->selected_regularizer == "sparse") {
+        return regularizer_energy_sparse_1st2nd(data, x, y);
+    } else if (data->selected_regularizer == "data") {
+        return regularizer_energy_data_dependent(data, x, y);
+    } else if (data->selected_regularizer == "discontinuous") {
+        return regularizer_energy_discontinuous(data, x, y);
+    } else {
+        cerr << "Invalid regularizer type: " << data->selected_regularizer << endl;
+        return 0.0;
+    }
+}
 
 static inline Vec3d get_pixel_safe(const Mat &img, int x, int y) {
     if(x < 0 || x >= img.cols || y < 0 || y >= img.rows) {
@@ -160,7 +177,7 @@ double regularizer_energy_gamma(sd_data *data, int x, int y) {
     return reg_weight * sum_abs_diff;
 }
 
-double regularizer_energy_combinaton(sd_data *data, int x, int y) {
+double regularizer_energy_combination(sd_data *data, int x, int y) {
     double lin = regularizer_energy_TV(data, x, y);
     double gamma_sad = regularizer_energy_gamma(data, x, y);
     return blend_factor * lin + (1.0 - blend_factor) * gamma_sad;

@@ -5,8 +5,6 @@
 #include <iostream>
 #include <algorithm>
 
-using namespace std;
-using namespace cv;
 
 ///////////////////////////////////////////////////////////////////////////////
 // Method Parameters //////////////////////////////////////////////////////////
@@ -51,19 +49,19 @@ double evaluate( sd_data *data, sd_sample *x ){
 
     init = data_energy( data, x->x, x->y );
     for( int i=0; i<reg_cnt; i++ )
-        init += regularizer_energy_TV( data, x->x+reg_x[i], x->y+reg_y[i] );
+        init += apply_regularizer( data, x->x+reg_x[i], x->y+reg_y[i] );
 
     // splat positive
     splat( data, x, 1.0 );
     plus_val = data_energy( data, x->x, x->y );
     for( int i=0; i<reg_cnt; i++ )
-        plus_val += regularizer_energy_TV( data, x->x+reg_x[i], x->y+reg_y[i] );
+        plus_val += apply_regularizer( data, x->x+reg_x[i], x->y+reg_y[i] );
 
     // now negative (remove twice to get negative effect)
     splat( data, x, -2.0 );
     minus_val = data_energy( data, x->x, x->y );
     for( int i=0; i<reg_cnt; i++ )
-        minus_val += regularizer_energy_TV( data, x->x+reg_x[i], x->y+reg_y[i] );
+        minus_val += apply_regularizer( data, x->x+reg_x[i], x->y+reg_y[i] );
 
     // restore original
     splat( data, x, 1.0 );

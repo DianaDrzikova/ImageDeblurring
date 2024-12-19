@@ -4,12 +4,14 @@
 #include <opencv2/opencv.hpp>
 
 using namespace cv;
+using namespace std;
 
 struct sd_data {
     Mat input;      // blurred input image q
     Mat intrinsic;  // intrinsic image p
     Mat blurred;    // A p
     Mat mask;       // mask for valid pixels (1.0 = valid, 0.0 = invalid/padded/saturated)
+    string selected_regularizer;
 };
 
 struct sd_sample {

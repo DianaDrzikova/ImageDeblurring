@@ -5,9 +5,10 @@
 #include <opencv2/opencv.hpp>
 #include "regularizers.h"
 #include "stochastic_deconvolution.h"
+#include <unistd.h>
+#include <sys/stat.h>
+#include <filesystem>
 
-using namespace std;
-using namespace cv;
 
 const int    num_iterations = 100;      // number of 'iterations'
 double ed                   = 0.025;    // starting deposition energy
@@ -22,8 +23,34 @@ Mat blur_image( const Mat &img );
 int main( int argc, char **argv ){
     srand((unsigned)time(NULL)); // seed random number generator
 
+    string input_image_path;
+    string regularizer_type = "tv"; // Default regularizer type
+    int opt;
+    while ((opt = getopt(argc, argv, "i:r:")) != -1) {
+        switch (opt) {
+            case 'i':
+                input_image_path = optarg;
+                break;
+            case 'r':
+                regularizer_type = optarg;
+                break;
+            default:
+                cerr << "Usage: " << argv[0] << " -i <input_image_path> [-r <regularizer_type>]" << endl;
+                cerr << "regularizer_type: tv, gamma, combination, sparse, data, discontinuous" << endl;
+                return 1;
+        }
+    }
+    if (input_image_path.empty()) {
+        cerr << "Usage: " << argv[0] << " -i <input_image_path> [-r <regularizer_type>]" << endl;
+        cerr << "regularizer_type: tv, gamma, combination, sparse, data, discontinuous" << endl;
+        return 1;
+    }
     // load input image and process
-    Mat input = imread("dandelion.jpg", IMREAD_COLOR);
+    Mat input = imread(input_image_path, IMREAD_COLOR);
+    if (input.empty()) {
+        cerr << "Error: Unable to load image." << endl;
+        return 1;
+    }
     input.convertTo(input, CV_64FC3, 1.0 / 255.0);
 
     int pad = 4;
@@ -63,6 +90,7 @@ int main( int argc, char **argv ){
     data.intrinsic = solution; // p
     data.blurred = blur_image( solution ); // A p
     data.mask = mask;
+    data.selected_regularizer = regularizer_type;
 
     sd_callbacks cb;
     cb.copy = copy_sample;
@@ -80,6 +108,13 @@ int main( int argc, char **argv ){
     // resize back to the original image size
     Mat final_intrinsic = data.intrinsic(Rect(pad, pad, input.cols, input.rows)).clone();
     Mat final_input = padded_input(Rect(pad, pad, input.cols, input.rows)).clone();
+
+    // Extract image name without extension
+    filesystem::path input_path(input_image_path);
+    string image_name = input_path.stem().string();
+    string results_dir = image_name + "_results";
+    // Create results directory if it doesn't exist
+    mkdir(results_dir.c_str(), 0777);
     // Write out images
     // ground_truth.png
     {
@@ -87,7 +122,7 @@ int main( int argc, char **argv ){
         cv::threshold(out, out, 0.0, 0.0, THRESH_TOZERO);
         out = out * 255.0;
         Mat out8u; out.convertTo(out8u, CV_8U);
-        imwrite("ground_truth.png", out8u);
+        imwrite(results_dir + "/" + image_name + "_ground_truth.png", out8u);
     }
 
     // blurred.png
@@ -96,7 +131,7 @@ int main( int argc, char **argv ){
         cv::threshold(out, out, 0.0, 0.0, THRESH_TOZERO);
         out = out * 255.0;
         Mat out8u; out.convertTo(out8u, CV_8U);
-        imwrite("blurred.png", out8u);
+        imwrite(results_dir + "/" + image_name + "_blurred.png", out8u);
     }
 
     // intrinsic.png
@@ -108,14 +143,14 @@ int main( int argc, char **argv ){
         cv::min(out, 1.0, out);
         out = out * 255.0;
         Mat out8u; out.convertTo(out8u, CV_8U);
-        imwrite("intrinsic.png", out8u);
+        imwrite(results_dir + "/" + image_name + "_intrinsic.png", out8u);
     }
     std::cout << "Done!" << std::endl;
     return 0;
 }
 
 
-// blurs the input image using the hardcoded PSF above
+// blurs the input image using the hardcoded PSF
 Mat blur_image(const Mat &img) {
     Mat blurred = Mat::zeros(img.size(), CV_64FC3);  // Initialize the output image
 
