@@ -19,6 +19,8 @@ include_directories(
 
 add_executable(stochastic_deconvolution_sample
     main.cpp
+    stochastic_deconvolution.cpp
+    regularizers.cpp
 )
 
 
