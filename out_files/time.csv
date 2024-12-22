@@ -1,0 +1,9 @@
+regularizer,time(s)
+tv, 27.173
+gamma, 237.011
+combination, 241.905
+sparse, 139.963
+data, 54.821
+discontinuous, 95.703
+opencv, 11.148
+original, 9.649
